@@ -91,8 +91,16 @@ function App() {
   const [apiError, setApiError] = useState<string | null>(null)
   const [caseUpdateError, setCaseUpdateError] = useState<string | null>(null)
   const [updatingCaseId, setUpdatingCaseId] = useState<number | null>(null)
+  const [transactionSearch, setTransactionSearch] = useState('')
+  const [riskBandFilter, setRiskBandFilter] = useState('all')
+  const [channelFilter, setChannelFilter] = useState('all')
 
   async function loadDashboardData(showLoading = true) {
+    // Keep the loading indicator visible long enough to be noticed, even when
+    // the local API responds very quickly.
+    const loadingStartedAt = Date.now()
+    const minimumLoadingDurationMs = 500
+
     if (showLoading) {
       setIsLoading(true)
       setApiError(null)
@@ -140,6 +148,15 @@ function App() {
           : 'An unexpected error occurred.',
       )
     } finally {
+      const elapsedMs = Date.now() - loadingStartedAt
+      const remainingLoadingMs = minimumLoadingDurationMs - elapsedMs
+
+      if (remainingLoadingMs > 0) {
+        await new Promise<void>((resolve) => {
+          window.setTimeout(resolve, remainingLoadingMs)
+        })
+      }
+
       setIsLoading(false)
     }
   }
@@ -196,6 +213,33 @@ function App() {
   const openCaseCount = dashboardData.cases.filter(
     (fraudCase) => fraudCase.status === 'open',
   ).length
+
+  const normalizedTransactionSearch = transactionSearch.trim().toLowerCase()
+  const filteredTransactions = dashboardData.transactions.filter((transaction) => {
+    const assessment = dashboardData.assessments.find(
+      (item) => item.transaction_id === transaction.transaction_id,
+    )
+    const riskBand = assessment?.risk_band.toLowerCase() ?? 'unassessed'
+    const matchesSearch =
+      normalizedTransactionSearch.length === 0 ||
+      [transaction.transaction_id, transaction.customer_id, transaction.merchant_category]
+        .some((value) => value.toLowerCase().includes(normalizedTransactionSearch))
+    const matchesRiskBand = riskBandFilter === 'all' || riskBand === riskBandFilter
+    const matchesChannel = channelFilter === 'all' || transaction.channel === channelFilter
+
+    return matchesSearch && matchesRiskBand && matchesChannel
+  })
+
+  const hasActiveTransactionFilters =
+    transactionSearch.trim().length > 0 ||
+    riskBandFilter !== 'all' ||
+    channelFilter !== 'all'
+
+  function clearTransactionFilters() {
+    setTransactionSearch('')
+    setRiskBandFilter('all')
+    setChannelFilter('all')
+  }
 
   return (
     <div className="app-shell">
@@ -291,6 +335,13 @@ function App() {
               Foundation preview
             </div>
           </div>
+
+          {isLoading && (
+            <div className="dashboard-loading-banner" role="status" aria-live="polite">
+              <span className="dashboard-loading-spinner" aria-hidden="true" />
+              <span>Loading dashboard data from the backend…</span>
+            </div>
+          )}
 
           {activePage === 'Overview' ? (
             <>
@@ -416,8 +467,60 @@ function App() {
                 <span className="panel-tag">
                   {isLoading
                     ? 'LOADING'
-                    : `${dashboardData.transactions.length} RECORDS`}
+                    : `${filteredTransactions.length} OF ${dashboardData.transactions.length} RECORDS`}
                 </span>
+              </div>
+
+              <div className="transaction-filters" aria-label="Filter transactions">
+                <label className="transaction-filter-field">
+                  <span>Search</span>
+                  <input
+                    type="search"
+                    value={transactionSearch}
+                    onChange={(event) => setTransactionSearch(event.target.value)}
+                    placeholder="Transaction, customer, or merchant"
+                    aria-label="Search transactions"
+                  />
+                </label>
+
+                <label className="transaction-filter-field">
+                  <span>Risk band</span>
+                  <select
+                    value={riskBandFilter}
+                    onChange={(event) => setRiskBandFilter(event.target.value)}
+                    aria-label="Filter by risk band"
+                  >
+                    <option value="all">All risk bands</option>
+                    <option value="high">High</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                    <option value="unassessed">Not assessed</option>
+                  </select>
+                </label>
+
+                <label className="transaction-filter-field">
+                  <span>Channel</span>
+                  <select
+                    value={channelFilter}
+                    onChange={(event) => setChannelFilter(event.target.value)}
+                    aria-label="Filter by channel"
+                  >
+                    <option value="all">All channels</option>
+                    <option value="card">Card</option>
+                    <option value="online">Online</option>
+                    <option value="transfer">Transfer</option>
+                  </select>
+                </label>
+
+                {hasActiveTransactionFilters && (
+                  <button
+                    className="clear-filters-button"
+                    type="button"
+                    onClick={clearTransactionFilters}
+                  >
+                    Clear filters
+                  </button>
+                )}
               </div>
 
               {apiError && (
@@ -432,6 +535,19 @@ function App() {
                 <p className="empty-state">
                   No transactions were returned by the API.
                 </p>
+              ) : filteredTransactions.length === 0 ? (
+                <div className="filter-empty-state">
+                  <p className="empty-state">
+                    No transactions match the current filters.
+                  </p>
+                  <button
+                    className="clear-filters-button"
+                    type="button"
+                    onClick={clearTransactionFilters}
+                  >
+                    Clear filters and show all transactions
+                  </button>
+                </div>
               ) : (
                 <div className="table-container">
                   <table className="data-table">
@@ -450,7 +566,7 @@ function App() {
                     </thead>
 
                     <tbody>
-                      {dashboardData.transactions.map((transaction) => {
+                      {filteredTransactions.map((transaction) => {
                         const assessment = dashboardData.assessments.find(
                           (item) =>
                             item.transaction_id === transaction.transaction_id,
